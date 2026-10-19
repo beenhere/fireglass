@@ -112,6 +112,9 @@ final class RemoteServer {
     static final class Req {
         String method, path, query = "", auth;
         byte[] body = new byte[0];
+        // An upload's body is left on the socket for the handler to stream (see parse).
+        InputStream stream;
+        int length;
         JSONObject json() throws JSONException {
             return new JSONObject(body.length == 0 ? "{}" : new String(body, StandardCharsets.UTF_8));
         }
@@ -168,13 +171,16 @@ final class RemoteServer {
         r.path = qi < 0 ? target : target.substring(0, qi);
         if (qi >= 0) r.query = target.substring(qi + 1);
         int length = 0;
+        // Pictures from the phone stream to disk (up to 25 MB); everything else is small JSON.
+        boolean upload = r.method.equals("POST") && r.path.equals("/api/wallpapers");
         for (String h; (h = readLine(in)) != null && !h.isEmpty(); ) {
             int c = h.indexOf(':');
             if (c < 0) continue;
             String name = h.substring(0, c).trim().toLowerCase(Locale.ROOT), value = h.substring(c + 1).trim();
-            if (name.equals("content-length")) length = Math.min(Integer.parseInt(value), 64 * 1024);
+            if (name.equals("content-length")) length = Math.min(Integer.parseInt(value), upload ? 25 << 20 : 64 * 1024);
             else if (name.equals("authorization") && value.startsWith("Bearer ")) r.auth = value.substring(7);
         }
+        if (upload) { r.stream = in; r.length = length; return r; }
         r.body = new byte[length];
         for (int got = 0; got < length; ) {
             int n = in.read(r.body, got, length - got);
@@ -237,6 +243,7 @@ final class RemoteServer {
             res.body = png;
             return res;
         }
+        if (p.startsWith("/api/wallpapers")) return wallpapers(r);
         if (m.equals("POST") && p.equals("/api/key")) {
             JSONObject b = r.json();
             String key = b.optString("key");
@@ -296,6 +303,42 @@ final class RemoteServer {
     }
 
     /** One KeyServer command; 503 needs_bootstrap until a phone has started it this boot. */
+    /**
+     * GET list, GET /thumb?name=, POST (body: the image; ?use=background also sets it),
+     * DELETE ?name=, POST /background {"name": ... or null}.
+     */
+    private Res wallpapers(Req r) throws Exception {
+        String m = r.method, p = r.path;
+        if (m.equals("GET") && p.equals("/api/wallpapers")) return Res.json(200, Wallpapers.list(svc));
+        if (m.equals("GET") && p.equals("/api/wallpapers/thumb")) {
+            byte[] jpg = Wallpapers.thumb(r.q("name"));
+            if (jpg == null) return Res.json(404, err("no_wallpaper"));
+            Res res = new Res();
+            res.type = "image/jpeg";
+            res.body = jpg;
+            return res;
+        }
+        if (m.equals("POST") && p.equals("/api/wallpapers")) {
+            if (r.length <= 0) return Res.json(400, err("empty"));
+            String name = Wallpapers.save(svc, r.stream, r.length);
+            if (name == null) return Res.json(400, err("not_an_image"));
+            if ("background".equals(r.q("use"))) Wallpapers.setBackground(svc, name);
+            return Res.json(200, new JSONObject().put("ok", true).put("name", name));
+        }
+        if (m.equals("DELETE") && p.equals("/api/wallpapers")) {
+            return Wallpapers.delete(svc, r.q("name")) ? Res.json(200, new JSONObject().put("ok", true))
+                    : Res.json(404, err("no_wallpaper"));
+        }
+        if (m.equals("POST") && p.equals("/api/wallpapers/background")) {
+            JSONObject b = r.json();
+            String name = b.isNull("name") ? null : b.optString("name", null);
+            if (name != null && Wallpapers.file(name) == null) return Res.json(404, err("no_wallpaper"));
+            Wallpapers.setBackground(svc, name);
+            return Res.json(200, new JSONObject().put("ok", true));
+        }
+        return Res.json(404, err("not_found"));
+    }
+
     private Res keyCmd(String line) throws Exception {
         String reply;
         try {

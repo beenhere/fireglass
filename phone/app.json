@@ -68,6 +68,14 @@
       ],
       "expo-image",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Lets you pick pictures to show on your TV as a background or screensaver.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-speech-recognition",
         {
           "microphonePermission": "Lets you talk to your TV with the mic button.",

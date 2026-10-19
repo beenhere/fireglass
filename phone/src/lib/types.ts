@@ -38,6 +38,10 @@ export type Title = {
   at?: number;
 };
 
+/** /api/wallpapers: pictures on the TV, newest first; `background` is the one behind the home, if any. */
+export type Wallpaper = { name: string; bytes: number; modified: number; uploaded: boolean };
+export type WallpaperList = { items: Wallpaper[]; background: string | null; look: number };
+
 /** /api/recent items are titles or bare apps. */
 export type RecentItem = Title | { pkg: string; label: string };
 

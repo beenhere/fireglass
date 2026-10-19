@@ -77,6 +77,22 @@ A **title**:
 `/api/play` resolves the title (by `id` if given), picks the offer (`pkg` if given, else the first
 installed one), opens it, and records it in `/api/recent`.
 
+## Wallpapers
+
+Pictures on the TV, in `/sdcard/Pictures/tvhome`: the Photos screensaver shows all of them, and one
+can be the home's background (Customise home → Background → Wallpaper).
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/api/wallpapers` | | `{"items":[{"name":"up-20261019-231500.jpg","bytes":402113,"modified":1792432500000,"uploaded":true}…],"background":"up-…jpg"\|null,"look":5}` newest first |
+| GET | `/api/wallpapers/thumb?name=<name>` | | JPEG, 320x180 |
+| POST | `/api/wallpapers` (`?use=background` to also set it) | the image file itself (JPEG, PNG, WebP or HEIF), up to 25 MB, with `Content-Length` | `{"ok":true,"name":"up-….jpg"}` or `400 {"error":"not_an_image"}` |
+| DELETE | `/api/wallpapers?name=<name>` | | `{"ok":true}`; if it was the background, the home goes back to Live sky |
+| POST | `/api/wallpapers/background` | `{"name":"up-….jpg"}` or `{"name":null}` | `{"ok":true}`; the home switches at once |
+
+The TV turns each upload upright (EXIF), crops it to 16:9 from the centre and stores a 1920x1080
+JPEG, whatever size the phone sent. The upload is streamed to a temp file, never held whole in memory.
+
 ## Assistant actions (phone side)
 
 The phone's on-device model turns speech/text into exactly one of these (grammar-constrained JSON),

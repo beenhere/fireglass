@@ -11,8 +11,12 @@ import android.graphics.Shader;
 import android.os.SystemClock;
 import android.view.View;
 
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.Random;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * The backdrop: a sky whose colours follow the real time of day (night, dawn, day, dusk), with
@@ -20,6 +24,7 @@ import java.util.Random;
  * a fixed film grain on top. Rendered on the CPU into a 128x72 bitmap and drawn scaled up with
  * bilinear filtering, which is both the blur and the cheap part; ~15 fps since nothing moves fast.
  * Positions come from the wall clock, so any two SkyViews (home, loading screen) show the same frame.
+ * "Wallpaper" shows the picture chosen on the phone instead ({@link Wallpapers}), drawn once, still.
  */
 final class SkyView extends View {
     private static final int W = 128, H = 72;
@@ -30,7 +35,8 @@ final class SkyView extends View {
     private static final int[] DAY = {0xFF0E2A5A, 0xFF3E7BFA, 0xFF3FB8C9, 0xFF5CC9A0};
     private static final int[] DUSK = {0xFF2B1240, 0xFFFF8A5B, 0xFFE2508F, 0xFF6A3FD1};
     // Fixed looks for the home's "Background" setting; null palette = follow the time of day.
-    static final String[] LOOKS = {"Live sky", "Aurora", "Dusk", "Ocean", "Graphite"};
+    static final String[] LOOKS = {"Live sky", "Aurora", "Dusk", "Ocean", "Graphite", "Wallpaper"};
+    static final int WALLPAPER = 5;
     private static final int[][] LOOK_PALETTES = {
             null,
             {0xFF06141A, 0xFF1FA38A, 0xFF3B4FD8, 0xFF7A3FC4},
@@ -39,11 +45,22 @@ final class SkyView extends View {
             {0xFF0B0C10, 0xFF3A3F4B, 0xFF262A33, 0xFF4B5160},
     };
     private int[] fixed;
+    private boolean wallpaper;
 
-    /** Which of {@link #LOOKS}. */
+    /** Which of {@link #LOOKS}. Wallpaper with no picture set shows the live sky. */
     void setLook(int i) {
-        fixed = LOOK_PALETTES[Math.max(0, Math.min(i, LOOK_PALETTES.length - 1))];
+        wallpaper = i == WALLPAPER;
+        fixed = wallpaper ? null : LOOK_PALETTES[Math.max(0, Math.min(i, LOOK_PALETTES.length - 1))];
         invalidate();
+    }
+
+    // Every SkyView on screen, so a background chosen on the phone shows at once.
+    private static final Set<SkyView> live = Collections.newSetFromMap(new WeakHashMap<>());
+
+    static void refreshAll(int look) {
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            for (SkyView v : new ArrayList<>(live)) v.setLook(look);
+        });
     }
 
     private static final float[] HOURS = {0f, 5.5f, 8f, 11f, 16f, 18.5f, 20.5f, 24f};
@@ -91,8 +108,8 @@ final class SkyView extends View {
         if (run) invalidate();
     }
 
-    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); setRunning(true); }
-    @Override protected void onDetachedFromWindow() { setRunning(false); super.onDetachedFromWindow(); }
+    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); live.add(this); setRunning(true); }
+    @Override protected void onDetachedFromWindow() { setRunning(false); live.remove(this); super.onDetachedFromWindow(); }
 
     /** Ease the accent to {@code color} at {@code level} (0..1). */
     /** Remote in use: pause the drift for a moment. */
@@ -120,6 +137,13 @@ final class SkyView extends View {
     }
 
     @Override protected void onDraw(Canvas c) {
+        Bitmap wall = wallpaper ? Wallpapers.backdrop(getContext(), this::invalidate) : null;
+        if (wall != null) {
+            // A still picture: one draw, no redraw loop.
+            dst.set(0, 0, getWidth(), getHeight());
+            c.drawBitmap(wall, null, dst, skyPaint);
+            return;
+        }
         long now = SystemClock.uptimeMillis();
         if (now >= holdUntil) render(now);
         dst.set(0, 0, getWidth(), getHeight());

@@ -55,7 +55,7 @@ public class HomeSettings extends Activity {
             "Look",
             new Row(STYLE, "Home style", "Featured titles shows what's trending on your apps above them. Minimal keeps just your apps over the background.",
                     "Featured titles", "Minimal"),
-            new Row(LOOK, "Background", "Live sky follows the time of day, from dawn peach to night indigo. The others are fixed colour washes.",
+            new Row(LOOK, "Background", "Live sky follows the time of day, from dawn peach to night indigo. The colour washes stay fixed. Wallpaper shows the picture you choose in the phone app.",
                     SkyView.LOOKS),
             "Home rows",
             new Row(RECENT, "Recently watched", "What you've played lately, with the app it was on. Hold OK on a title there to remove it.", "Hidden", "Shown"),

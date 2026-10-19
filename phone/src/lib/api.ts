@@ -1,5 +1,6 @@
+import * as FileSystem from 'expo-file-system/legacy';
 import type {
-  Key, NowPlaying, Ok, PlayRequest, PlayResult, RecentItem, Title, TvApp, TvInfo,
+  Key, NowPlaying, Ok, PlayRequest, PlayResult, RecentItem, Title, TvApp, TvInfo, WallpaperList,
 } from './types';
 
 export const DEFAULT_PORT = 8090;
@@ -28,7 +29,7 @@ export function parseAddress(input: string): { host: string; port: number } | nu
   return { host: s, port };
 }
 
-type Opts = { method?: 'GET' | 'POST'; body?: unknown; timeout?: number; auth?: boolean };
+type Opts = { method?: 'GET' | 'POST' | 'DELETE'; body?: unknown; timeout?: number; auth?: boolean };
 
 export class TvClient {
   constructor(public host: string, public port: number = DEFAULT_PORT, public token: string | null = null) {}
@@ -104,5 +105,30 @@ export class TvClient {
   play(p: Partial<PlayRequest>) {
     const body: PlayRequest = { title: p.title ?? null, pkg: p.pkg ?? null, kind: p.kind ?? null, id: p.id ?? null };
     return this.req<PlayResult>('/api/play', { method: 'POST', body, timeout: 12000 });
+  }
+
+  // wallpapers: pictures on the TV for its screensaver, and one as the home's background
+  wallpapers() { return this.req<WallpaperList>('/api/wallpapers'); }
+  wallpaperThumb(name: string) {
+    return {
+      uri: `${this.base}/api/wallpapers/thumb?name=${encodeURIComponent(name)}`,
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
+      cacheKey: `${this.host}:${this.port}/wallpaper/${name}`,
+    };
+  }
+  deleteWallpaper(name: string) { return this.req<Ok>(`/api/wallpapers?name=${encodeURIComponent(name)}`, { method: 'DELETE' }); }
+  setBackground(name: string | null) { return this.req<Ok>('/api/wallpapers/background', { method: 'POST', body: { name } }); }
+
+  /** Send a picture from this phone (streamed from its file); the TV crops it to 16:9, 1920x1080. */
+  async uploadWallpaper(fileUri: string, asBackground = false): Promise<{ ok: boolean; name: string }> {
+    const res = await FileSystem.uploadAsync(`${this.base}/api/wallpapers${asBackground ? '?use=background' : ''}`, fileUri, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: { 'Content-Type': 'application/octet-stream', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
+    }).catch(() => { throw new ApiError(0, 'offline', "Can't reach the TV"); });
+    let data: any = null;
+    try { data = JSON.parse(res.body); } catch { /* not JSON */ }
+    if (res.status !== 200) throw new ApiError(res.status, data?.error ?? `http_${res.status}`);
+    return data;
   }
 }

@@ -39,6 +39,7 @@ adb shell pm grant "$PKG" android.permission.ACCESS_FINE_LOCATION || true
 adb shell appops set "$PKG" GET_USAGE_STATS allow
 adb shell pm grant "$PKG" android.permission.WRITE_SECURE_SETTINGS || true
 adb shell pm grant "$PKG" android.permission.READ_EXTERNAL_STORAGE || true
+adb shell pm grant "$PKG" android.permission.WRITE_EXTERNAL_STORAGE || true
 # Compile ahead of time now, instead of JIT warming up while you use it (first minutes stutter otherwise).
 adb shell cmd package compile -m speed -f "$PKG" >/dev/null
 # Home button takeover: Fire OS has no default-launcher picker, so the accessibility service does it.

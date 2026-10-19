@@ -20,8 +20,10 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -213,12 +215,32 @@ final class Catalog {
                 .put("pkg", pick.getString("pkg")).put("how", "deeplink"));
     }
 
+    /**
+     * The top video for {@code query} on YouTube's site: {id, thumbnail}. The thumbnail is the widest
+     * one the results list for it (16:9, no letterbox bars), else the stock hqdefault.
+     */
+    static String[] youTubeHit(String query) throws Exception {
+        String html = Net.get("https://www.youtube.com/results?hl=en&search_query=" + java.net.URLEncoder.encode(query, "UTF-8"));
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"videoRenderer\":\\{\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(html);
+        if (!m.find()) {
+            m = java.util.regex.Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(html);
+            if (!m.find()) return null;
+        }
+        String id = m.group(1), thumb = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg";
+        int at = html.indexOf("\"thumbnails\":[", m.end()), end = at < 0 ? -1 : html.indexOf(']', at);
+        if (at >= 0 && end > at && at - m.end() < 400) {
+            java.util.regex.Matcher u = java.util.regex.Pattern.compile("\"url\":\"(https://i\\.ytimg\\.com/vi/" + id + "/[^\"]+)\"")
+                    .matcher(html.substring(at, end));
+            while (u.find()) thumb = u.group(1).replace("\\u0026", "&");
+        }
+        return new String[]{id, thumb};
+    }
+
     /** Search YouTube's site for {@code query} and play the top video in the YouTube app. */
     static JSONObject playYouTube(Context c, String query) throws Exception {
-        String html = Net.get("https://www.youtube.com/results?hl=en&search_query=" + java.net.URLEncoder.encode(query, "UTF-8"));
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(html);
-        if (!m.find()) return RemoteServer.err("not_found");
-        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + m.group(1)))
+        String[] hit = youTubeHit(query);
+        if (hit == null) return RemoteServer.err("not_found");
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + hit[0]))
                 .setPackage(YOUTUBE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         c.startActivity(i);
         return new JSONObject().put("ok", true).put("opened", new JSONObject().put("title", query)
@@ -273,6 +295,7 @@ final class Catalog {
                     : new JSONObject().put("id", "app:" + pkg + ":" + show).put("title", show)
                             .put("offers", new JSONArray().put(new JSONObject().put("pkg", pkg).put("label", label(c, pkg, pkg))));
             if (!episode.isEmpty()) entry.put("episode", episode);
+            if (hit == null && YOUTUBE.equals(pkg)) youTubeArt(entry, episode.isEmpty() ? show : episode + " " + show);
             remember(c, entry, pkg);
             Log.i(TAG, "watched " + show + (episode.isEmpty() ? "" : " / " + episode) + " on " + pkg + (hit == null ? " (no match)" : ""));
         } catch (Exception e) {
@@ -290,6 +313,17 @@ final class Catalog {
         prefs(c).edit().putString("recent", next.toString()).apply();
     }
 
+    /** Replace the stored entry with {@code t}'s id by {@code t}, keeping its place. */
+    private static synchronized void patch(Context c, JSONObject t) {
+        try {
+            JSONArray r = recentRaw(c);
+            for (int i = 0; i < r.length(); i++) {
+                if (r.getJSONObject(i).optString("id").equals(t.optString("id"))) { r.put(i, t); break; }
+            }
+            prefs(c).edit().putString("recent", r.toString()).apply();
+        } catch (JSONException ignored) { }
+    }
+
     /** Take a title off the history. */
     static synchronized void forget(Context c, String id) {
         try {
@@ -299,8 +333,33 @@ final class Catalog {
         } catch (JSONException ignored) { }
     }
 
+    /** YouTube isn't in the catalogue: use the video's own thumbnail as the art. */
+    private static void youTubeArt(JSONObject entry, String query) {
+        try {
+            String[] y = youTubeHit(query);
+            if (y != null) entry.put("poster", y[1]).put("thumb", y[1]).put("backdrop", y[1]).put("videoId", y[0]);
+        } catch (Exception e) {
+            Log.w(TAG, "youtube art " + query, e);
+        }
+    }
+
+    private static final java.util.Set<String> artTried = new java.util.HashSet<>();
+
     static JSONArray recent(Context c) throws JSONException {
         JSONArray r = recentRaw(c);
+        // YouTube entries saved before they got art: look it up once, in the background.
+        List<JSONObject> bare = new ArrayList<>();
+        for (int i = 0; i < r.length(); i++) {
+            JSONObject t = r.getJSONObject(i);
+            if (YOUTUBE.equals(t.optString("watchedPkg")) && !t.has("poster") && artTried.add(t.optString("id"))) bare.add(t);
+        }
+        if (!bare.isEmpty()) new Thread(() -> {
+            for (JSONObject t : bare) {
+                String ep = t.optString("episode");
+                youTubeArt(t, ep.isEmpty() ? t.optString("title") : ep + " " + t.optString("title"));
+                if (t.has("poster")) patch(c, t);
+            }
+        }, "youtube-art").start();
         for (int i = 0; i < r.length(); i++) {
             JSONObject t = r.getJSONObject(i);
             JSONObject known = byId.get(t.optString("id"));

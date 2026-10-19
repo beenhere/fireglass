@@ -213,6 +213,7 @@ public class HomeSettings extends Activity {
             if (dots != null) dots.setInk(has);
             if (!has) return;
             movePuck(v);
+            preview.show(r.key);
             aboutTitle.setText(r.label);
             about.setText(r.hint);
             about.setAlpha(0f);
@@ -234,6 +235,7 @@ public class HomeSettings extends Activity {
             if (r.key.equals(LOOK)) { sky.setLook(next); previewSky.setLook(next); }
             if (r.key.equals(STYLE) || r.key.equals(RECENT) || r.key.equals(WEATHER)) preview.invalidate();
             if (r.key.equals(SAVER)) Screensaver.apply(this);
+            if (r.key.equals(MOTION) || r.key.equals(SAVER)) preview.restart();
             return true;
         });
         return v;
@@ -266,11 +268,34 @@ public class HomeSettings extends Activity {
 
     // ---------------------------------------------------------------- little views
 
-    /** The home in miniature, drawn over the preview sky: top bar, featured block or big name, apps. */
+    /**
+     * The home in miniature, drawn over the preview sky: top bar, featured block or big name, apps.
+     * On the Motion row the focus walks along the apps the way it does at home (Full: springy lift
+     * and a streak of light; Calm: a quick settle). On the Screensaver row it shows that style,
+     * with real posters and photos decoded small.
+     */
     private final class Preview extends View {
         private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint img = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
         private final android.graphics.RectF r = new android.graphics.RectF();
+        private final android.graphics.Path clip = new android.graphics.Path();
+        private final java.util.List<android.graphics.Bitmap> posters = new java.util.ArrayList<>(), photos = new java.util.ArrayList<>();
+        private final java.util.List<String> posterNames = new java.util.ArrayList<>();
+        private String mode = "";
+        private long since;
+        private boolean loading;
         Preview(Context c) { super(c); }
+
+        /** The focused row's key; Motion and Screensaver get their own preview. */
+        void show(String key) {
+            String m = key.equals(MOTION) || key.equals(SAVER) ? key : "";
+            if (!m.equals(mode)) { mode = m; restart(); }
+            if (m.equals(SAVER)) load();
+        }
+
+        void restart() { since = android.os.SystemClock.uptimeMillis(); invalidate(); }
+
+        private long t() { return android.os.SystemClock.uptimeMillis() - since; }
 
         private void bar(android.graphics.Canvas c, float x, float y, float w, float h, int color) {
             p.setColor(color);
@@ -279,6 +304,13 @@ public class HomeSettings extends Activity {
         }
 
         @Override protected void onDraw(android.graphics.Canvas c) {
+            if (mode.equals(SAVER)) { saver(c); }
+            else home(c);
+            // ponytail: redraws every frame while a moving preview shows; it's one small card.
+            if (!mode.isEmpty()) postInvalidateOnAnimation();
+        }
+
+        private void home(android.graphics.Canvas c) {
             float w = getWidth(), h = getHeight(), x0 = w * 0.06f;
             boolean minimal = get(getContext(), STYLE) == STYLE_MINIMAL;
             // top bar: time, date line, nav capsule
@@ -301,13 +333,169 @@ public class HomeSettings extends Activity {
                 bar(c, x0, h * 0.49f, w * 0.28f, h * 0.03f, 0x66FFFFFF);
                 bar(c, x0, h * 0.56f, w * 0.13f, h * 0.06f, 0x59FFFFFF);
             }
-            // apps row
-            float tw = w * 0.155f, gap = w * 0.02f;
+            // apps row; on the Motion row the focus steps right every STEP ms, as at home
+            final long STEP = 1300;
+            boolean moving = mode.equals(MOTION), calm = get(getContext(), MOTION) == 1;
+            long t = t();
+            int cur = moving ? (int) (t / STEP % 6) : 0, prev = (cur + 5) % 6;
+            float ph = moving ? t % STEP : 1e6f;
+            float tw = w * 0.155f, gap = w * 0.02f, rad = h * 0.02f;
             for (int i = 0; i < 6; i++) {
-                p.setColor(i == 0 ? 0xF2FFFFFF : 0x4DFFFFFF);
-                r.set(x0 + i * (tw + gap), h * 0.74f, x0 + i * (tw + gap) + tw, h * 0.74f + tw * 9 / 16);
-                c.drawRoundRect(r, h * 0.02f, h * 0.02f, p);
+                float k = 1f;
+                if (i == cur) k = 1f + 0.08f * (calm ? decel(ph / 150f, 2f) : overshoot(ph / 460f, 1.5f));
+                else if (i == prev && moving && t >= STEP) k = 1f + 0.08f * (1f - decel(ph / (calm ? 140f : 260f), 2f));
+                float cx = x0 + i * (tw + gap) + tw / 2, cy = h * 0.74f + tw * 9 / 32;
+                r.set(cx - tw / 2 * k, cy - tw * 9 / 32 * k, cx + tw / 2 * k, cy + tw * 9 / 32 * k);
+                p.setColor(i == cur ? 0xF2FFFFFF : 0x4DFFFFFF);
+                c.drawRoundRect(r, rad, rad, p);
+                if (i == cur && moving && !calm && ph > 90 && ph < 990) {
+                    // the streak of light crossing the focused tile
+                    float s = decel((ph - 90) / 900f, 1.4f), sx = r.left - r.width() * 1.1f + r.width() * 2.2f * s;
+                    c.save();
+                    clip.reset();
+                    clip.addRoundRect(r, rad, rad, android.graphics.Path.Direction.CW);
+                    c.clipPath(clip);
+                    p.setShader(new android.graphics.LinearGradient(sx - r.width() * 0.3f, 0, sx + r.width() * 0.3f, 0,
+                            new int[]{0x00000000, 0x55000000, 0x00000000}, null, android.graphics.Shader.TileMode.CLAMP));
+                    c.drawRect(r, p);
+                    p.setShader(null);
+                    c.restore();
+                }
             }
+        }
+
+        private float decel(float x, float f) { x = Math.max(0f, Math.min(1f, x)); return (float) (1 - Math.pow(1 - x, f)); }
+
+        private float overshoot(float x, float tension) {
+            x = Math.max(0f, Math.min(1f, x)) - 1f;
+            return x * x * ((tension + 1) * x + tension) + 1f;
+        }
+
+        // ------------------------------------------------ screensaver preview
+
+        private static final long SLIDE = 2600;
+
+        private void saver(android.graphics.Canvas c) {
+            int style = get(getContext(), SAVER);
+            if (style == 5) {
+                // Shuffle: step through the ones that have something to show
+                java.util.List<Integer> pick = new java.util.ArrayList<>(java.util.Arrays.asList(1, 4));
+                if (!posters.isEmpty()) pick.add(1, 2);
+                if (!photos.isEmpty()) pick.add(pick.size() - 1, 3);
+                style = pick.get((int) (t() / SLIDE % pick.size()));
+            }
+            float w = getWidth(), h = getHeight();
+            if (style == 0) {
+                p.setColor(0xF2050508);
+                c.drawRect(0, 0, w, h, p);
+                text(c, "Amazon's screensaver", w / 2, h / 2, h * 0.07f, 0x99FFFFFF, false, android.graphics.Paint.Align.CENTER);
+            } else if (style == 1) {
+                // the clock hops to a new spot (every minute on the TV; faster here)
+                int spot = (int) (t() / SLIDE % 3);
+                float x = w * (spot == 0 ? 0.08f : spot == 1 ? 0.42f : 0.2f), y = h * (spot == 0 ? 0.42f : spot == 1 ? 0.58f : 0.8f);
+                float a = Math.min(1f, (t() % SLIDE) / 400f);
+                text(c, clock(), x, y, h * 0.24f, alpha(0xFFFFFFFF, a), true, android.graphics.Paint.Align.LEFT);
+                text(c, date(), x + w * 0.005f, y + h * 0.09f, h * 0.055f, alpha(0xB3FFFFFF, a), false, android.graphics.Paint.Align.LEFT);
+            } else if (style == 2 || style == 3) {
+                java.util.List<android.graphics.Bitmap> set = style == 2 ? posters : photos;
+                if (set.isEmpty()) {
+                    p.setColor(0xCC050508);
+                    c.drawRect(0, 0, w, h, p);
+                    text(c, loading ? "Loading…" : style == 2 ? "No posters yet" : "No photos in Pictures/tvhome",
+                            w / 2, h / 2, h * 0.065f, 0x99FFFFFF, false, android.graphics.Paint.Align.CENTER);
+                } else {
+                    long t = t();
+                    int i = (int) (t / SLIDE % set.size());
+                    float fade = Math.min(1f, (t % SLIDE) / 700f);
+                    if (t >= SLIDE && fade < 1f) cover(c, set.get((i + set.size() - 1) % set.size()), 255);
+                    cover(c, set.get(i), (int) (255 * fade));
+                    if (style == 2) {
+                        p.setShader(new android.graphics.LinearGradient(0, h * 0.45f, 0, h, 0x00000000, 0xCC000000,
+                                android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRect(0, 0, w, h, p);
+                        p.setShader(null);
+                        text(c, posterNames.get(i), w * 0.06f, h * 0.88f, h * 0.1f, alpha(0xFFFFFFFF, fade), true, android.graphics.Paint.Align.LEFT);
+                    } else smallClock(c, w, h);
+                }
+            } else {
+                smallClock(c, w, h); // Ambient: the sky behind, slowly moving, and a small clock
+            }
+        }
+
+        private void smallClock(android.graphics.Canvas c, float w, float h) {
+            text(c, clock(), w * 0.94f, h * 0.84f, h * 0.11f, 0xFFFFFFFF, true, android.graphics.Paint.Align.RIGHT);
+            text(c, date(), w * 0.94f, h * 0.91f, h * 0.04f, 0xB3FFFFFF, false, android.graphics.Paint.Align.RIGHT);
+        }
+
+        /** Draw a bitmap filling the card (centre crop). */
+        private void cover(android.graphics.Canvas c, android.graphics.Bitmap b, int a) {
+            float w = getWidth(), h = getHeight(), s = Math.max(w / b.getWidth(), h / b.getHeight());
+            float bw = b.getWidth() * s, bh = b.getHeight() * s;
+            r.set((w - bw) / 2, (h - bh) / 2, (w + bw) / 2, (h + bh) / 2);
+            img.setAlpha(a);
+            c.drawBitmap(b, null, r, img);
+        }
+
+        private void text(android.graphics.Canvas c, String s, float x, float y, float size, int color, boolean serif,
+                          android.graphics.Paint.Align align) {
+            p.setColor(color);
+            p.setTextSize(size);
+            p.setTextAlign(align);
+            p.setTypeface(serif ? Look.serif(getContext()) : Look.sans(getContext(), 500));
+            p.setShadowLayer(size * 0.3f, 0, 0, 0x66000000);
+            c.drawText(s, x, y, p);
+            p.clearShadowLayer();
+        }
+
+        private String clock() { return android.text.format.DateFormat.format("h:mm", System.currentTimeMillis()).toString(); }
+        private String date() { return android.text.format.DateFormat.format("EEEE d MMMM", System.currentTimeMillis()).toString(); }
+        private int alpha(int color, float a) { return (color & 0xFFFFFF) | ((int) ((color >>> 24) * a) << 24); }
+
+        /** Up to four posters and four photos, card-sized, once, off the main thread. */
+        private void load() {
+            if (loading || !posters.isEmpty() || !photos.isEmpty()) return;
+            loading = true;
+            int pw = Math.max(getWidth(), Look.dp(getContext(), 380));
+            new Thread(() -> {
+                java.util.List<android.graphics.Bitmap> ps = new java.util.ArrayList<>(), fs = new java.util.ArrayList<>();
+                java.util.List<String> names = new java.util.ArrayList<>();
+                try {
+                    org.json.JSONArray t = Catalog.recs(getContext());
+                    for (int i = 0; i < t.length() && ps.size() < 4; i++) {
+                        android.graphics.Bitmap b = Net.image(getContext(), t.getJSONObject(i).optString("backdrop", null), pw);
+                        if (b != null) { ps.add(b); names.add(t.getJSONObject(i).optString("title")); }
+                    }
+                } catch (Exception ignored) { }
+                java.io.File[] files = Screensaver.PHOTOS.listFiles((d, n) -> n.matches("(?i).+\\.(jpe?g|png|webp)"));
+                if (files != null) {
+                    java.util.List<java.io.File> list = new java.util.ArrayList<>(java.util.Arrays.asList(files));
+                    java.util.Collections.shuffle(list);
+                    for (java.io.File f : list) {
+                        if (fs.size() >= 4) break;
+                        android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                        o.inJustDecodeBounds = true;
+                        android.graphics.BitmapFactory.decodeFile(f.getPath(), o);
+                        o.inSampleSize = 1;
+                        while (o.outWidth / (o.inSampleSize * 2) >= pw) o.inSampleSize *= 2;
+                        o.inJustDecodeBounds = false;
+                        android.graphics.Bitmap b = android.graphics.BitmapFactory.decodeFile(f.getPath(), o);
+                        if (b != null) fs.add(b);
+                    }
+                }
+                post(() -> {
+                    loading = false;
+                    if (!isAttachedToWindow()) { for (android.graphics.Bitmap b : ps) b.recycle(); for (android.graphics.Bitmap b : fs) b.recycle(); return; }
+                    posters.addAll(ps); posterNames.addAll(names); photos.addAll(fs);
+                    restart();
+                });
+            }, "preview").start();
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            for (android.graphics.Bitmap b : posters) b.recycle();
+            for (android.graphics.Bitmap b : photos) b.recycle();
+            posters.clear(); photos.clear(); posterNames.clear();
         }
     }
 

@@ -26,6 +26,10 @@ Models offered: Qwen2.5 1.5B Instruct (1.1 GB), LiquidAI LFM2.5 1.2B Instruct (7
 
 ## Run it
 
+To skip building, get the Android APK or the iOS IPA from the
+[latest release](https://github.com/bhaweshverma50/fireglass/releases/latest) (see
+[Download](../README.md#download)).
+
 ```bash
 npm install                      # also applies patches/ (llama.rn's iOS JSI install for RN 0.8x)
 npm run mock-tv                  # a fake TV on :8090 that implements the whole API

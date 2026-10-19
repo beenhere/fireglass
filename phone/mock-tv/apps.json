@@ -1,0 +1,12 @@
+[
+  { "pkg": "com.netflix.ninja", "label": "Netflix", "color": "#E50914", "pinned": true },
+  { "pkg": "com.amazon.avod.thirdpartyclient", "label": "Prime Video", "color": "#00A8E1", "pinned": true },
+  { "pkg": "com.amazon.firetv.youtube", "label": "YouTube", "color": "#FF0033", "pinned": true },
+  { "pkg": "in.startv.hotstar", "label": "JioHotstar", "color": "#1F6FE0", "pinned": true },
+  { "pkg": "com.apple.atve.amazon.appletv", "label": "Apple TV", "color": "#8E9AA6", "pinned": true },
+  { "pkg": "com.sonyliv", "label": "Sony LIV", "color": "#E8A317" },
+  { "pkg": "com.graymatrix.did", "label": "ZEE5", "color": "#8230C6" },
+  { "pkg": "com.crunchyroll.crunchyroid", "label": "Crunchyroll", "color": "#F47521" },
+  { "pkg": "com.spotify.tv.android", "label": "Spotify", "color": "#1DB954" },
+  { "pkg": "com.plexapp.android", "label": "Plex", "color": "#E5A00D" }
+]

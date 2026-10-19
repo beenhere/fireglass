@@ -1,0 +1,365 @@
+package dev.bhawesh.tvhome;
+
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * Titles and where to watch them, from JustWatch's public GraphQL API (unofficial: no key, but it
+ * can change; everything degrades to "no recommendations"). Only offers on apps installed here
+ * count, and opening one goes straight to the title inside that app (tested per app on this stick).
+ */
+final class Catalog {
+    private Catalog() { }
+
+    private static final String TAG = "TvHome";
+    private static final String API = "https://apis.justwatch.com/graphql";
+    private static final String IMG = "https://images.justwatch.com";
+    private static final long RECS_TTL_MS = 6 * 3600 * 1000L;
+
+    /** JustWatch package short name -> Fire TV app. */
+    private static final Map<String, String> APPS = new LinkedHashMap<>();
+    static {
+        APPS.put("nfx", "com.netflix.ninja");
+        APPS.put("prv", "com.amazon.firebat");
+        APPS.put("jhs", "in.startv.hotstar");
+        APPS.put("zee", "com.zee5.amazon");
+        APPS.put("snl", "com.onemainstream.sonyliv.android");
+        APPS.put("atp", "com.apple.atve.amazon.appletv");
+        APPS.put("cru", "com.crunchyroll.crunchyroid");
+    }
+
+    private static final String FIELDS = "id objectType content(country: $c, language: $l) { title originalReleaseYear "
+            + "shortDescription posterUrl backdrops { backdropUrl } genres { translation(language: $l) } "
+            + "scoring { imdbScore } } offers(country: $c, platform: WEB) { monetizationType standardWebURL "
+            + "deeplinkURL(platform: ANDROID_TV) package { shortName clearName } }";
+
+    private static final Map<String, JSONObject> byId = new HashMap<>();
+    private static JSONArray recs;
+    private static long recsAt;
+
+    // ---------------------------------------------------------------- api routes
+
+    static RemoteServer.Res handle(Context c, RemoteServer srv, String method, String path, String q,
+                                   JSONObject body) throws Exception {
+        switch (path) {
+            case "/api/search":
+                return RemoteServer.json(200, search(c, q == null ? "" : q, 10));
+            case "/api/recs":
+                return RemoteServer.json(200, recs(c));
+            case "/api/recent":
+                return RemoteServer.json(200, recent(c));
+            case "/api/play":
+                return RemoteServer.json(200, play(c, body.optString("id", null), body.optString("title", null),
+                        body.isNull("pkg") ? null : body.optString("pkg", null)));
+            default:
+                return RemoteServer.json(404, RemoteServer.err("not_found"));
+        }
+    }
+
+    // ---------------------------------------------------------------- queries
+
+    static JSONArray search(Context c, String query, int n) throws IOException, JSONException {
+        JSONObject f = new JSONObject().put("searchQuery", query);
+        return titles(c, query(f, n, null));
+    }
+
+    /** Trending on the apps installed here; cached for 6 hours in memory and on disk. */
+    static synchronized JSONArray recs(Context c) throws JSONException {
+        if (recs != null && System.currentTimeMillis() - recsAt < RECS_TTL_MS) return recs;
+        File cache = new File(c.getCacheDir(), "recs.json");
+        try {
+            JSONArray pk = new JSONArray();
+            for (Map.Entry<String, String> e : APPS.entrySet()) if (installed(c, e.getValue())) pk.put(e.getKey());
+            JSONArray t = titles(c, query(new JSONObject().put("packages", pk), 24, "TRENDING"));
+            JSONArray withArt = new JSONArray();
+            for (int i = 0; i < t.length(); i++) {
+                JSONObject o = t.getJSONObject(i);
+                if (o.has("backdrop") && o.getJSONArray("offers").length() > 0) withArt.put(o);
+            }
+            recs = withArt;
+            recsAt = System.currentTimeMillis();
+            Files.write(cache.toPath(), recs.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Log.w(TAG, "recs offline: " + e);
+            if (recs == null && cache.exists()) {
+                try { recs = new JSONArray(new String(Files.readAllBytes(cache.toPath()), StandardCharsets.UTF_8)); }
+                catch (IOException ignored) { }
+            }
+            if (recs == null) recs = new JSONArray();
+        }
+        for (int i = 0; i < recs.length(); i++) byId.put(recs.getJSONObject(i).getString("id"), recs.getJSONObject(i));
+        return recs;
+    }
+
+    private static JSONArray query(JSONObject filter, int n, String sort) throws IOException, JSONException {
+        String q = "query Q($f: TitleFilter!, $c: Country!, $l: Language!, $n: Int!) { popularTitles(country: $c, "
+                + "filter: $f, first: $n" + (sort != null ? ", sortBy: " + sort : "") + ") { edges { node { "
+                + FIELDS + " } } } }";
+        JSONObject vars = new JSONObject().put("f", filter).put("c", "IN").put("l", "en").put("n", n);
+        JSONObject res = post(new JSONObject().put("query", q).put("variables", vars));
+        if (res.has("errors")) throw new IOException("justwatch: " + res.getJSONArray("errors").getJSONObject(0).optString("message"));
+        return res.getJSONObject("data").getJSONObject("popularTitles").getJSONArray("edges");
+    }
+
+    /** JustWatch nodes -> the API's title shape (docs/remote-api.md), offers limited to installed apps. */
+    private static JSONArray titles(Context c, JSONArray edges) throws JSONException {
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < edges.length(); i++) {
+            JSONObject node = edges.getJSONObject(i).getJSONObject("node");
+            JSONObject ct = node.getJSONObject("content");
+            JSONObject t = new JSONObject()
+                    .put("id", node.getString("id"))
+                    .put("title", ct.optString("title"))
+                    .put("year", ct.optInt("originalReleaseYear"))
+                    .put("kind", "SHOW".equals(node.optString("objectType")) ? "tv" : "movie")
+                    .put("overview", ct.optString("shortDescription"));
+            JSONObject sc = ct.optJSONObject("scoring");
+            if (sc != null && !sc.isNull("imdbScore")) t.put("rating", sc.optDouble("imdbScore"));
+            JSONArray genres = new JSONArray(), g = ct.optJSONArray("genres");
+            for (int k = 0; g != null && k < Math.min(2, g.length()); k++) genres.put(g.getJSONObject(k).optString("translation"));
+            t.put("genres", genres);
+            String poster = ct.optString("posterUrl", "");
+            if (!poster.isEmpty() && !ct.isNull("posterUrl")) t.put("poster", image(poster, "s592"));
+            JSONArray bd = ct.optJSONArray("backdrops");
+            if (bd != null && bd.length() > 0) {
+                String path = bd.getJSONObject(0).getString("backdropUrl");
+                t.put("backdrop", image(path, "s1440")).put("thumb", image(path, "s640"));
+            }
+
+            JSONArray offers = new JSONArray();
+            Map<String, Boolean> seen = new HashMap<>();
+            JSONArray of = node.optJSONArray("offers");
+            for (int k = 0; of != null && k < of.length(); k++) {
+                JSONObject o = of.getJSONObject(k);
+                String m = o.optString("monetizationType");
+                if (!m.equals("FLATRATE") && !m.equals("FREE") && !m.equals("ADS")) continue;
+                JSONObject p = o.getJSONObject("package");
+                String pkg = APPS.get(p.optString("shortName"));
+                if (pkg == null || seen.containsKey(pkg) || !installed(c, pkg)) continue;
+                seen.put(pkg, true);
+                JSONObject offer = new JSONObject().put("pkg", pkg).put("label", label(c, pkg, p.optString("clearName")))
+                        .put("url", o.optString("standardWebURL"));
+                if (!o.isNull("deeplinkURL")) offer.put("deeplink", o.optString("deeplinkURL"));
+                offers.put(offer);
+            }
+            t.put("offers", offers);
+            byId.put(t.getString("id"), t);
+            out.put(t);
+        }
+        return out;
+    }
+
+    private static String image(String path, String profile) {
+        return IMG + path.replace("{profile}", profile).replace("{format}", "jpg");
+    }
+
+    // ---------------------------------------------------------------- play
+
+    /** Resolve a title (by id, else by name), open it in the given app or the first one that has it. */
+    static final String YOUTUBE = "com.amazon.firetv.youtube";
+
+    static JSONObject play(Context c, String id, String title, String pkg) throws Exception {
+        // YouTube isn't in the catalogue (and its TV app ignores search links): find the video here.
+        if (YOUTUBE.equals(pkg) && title != null && !title.isEmpty()) return playYouTube(c, title);
+        JSONObject t = id != null ? byId.get(id) : null;
+        JSONArray candidates = new JSONArray();
+        if (t == null && title != null && !title.isEmpty()) {
+            candidates = search(c, title, 6);
+            for (int i = 0; i < candidates.length() && t == null; i++) {
+                JSONObject x = candidates.getJSONObject(i);
+                if (x.getString("title").equalsIgnoreCase(title.trim())) t = x;
+            }
+            if (t == null && candidates.length() > 0) t = candidates.getJSONObject(0);
+        }
+        if (t == null) {
+            // Not a show or film anyone streams: it's probably a video, so try YouTube.
+            if (pkg == null && title != null && installed(c, YOUTUBE)) return playYouTube(c, title);
+            return RemoteServer.err("not_found");
+        }
+        JSONArray offers = t.getJSONArray("offers");
+        JSONObject pick = null;
+        for (int i = 0; i < offers.length(); i++) {
+            JSONObject o = offers.getJSONObject(i);
+            if (pkg == null || pkg.equals(o.getString("pkg"))) { pick = o; break; }
+        }
+        if (pick == null) {
+            JSONObject e = RemoteServer.err("not_on_your_apps");
+            return e.put("candidates", candidates.length() > 0 ? candidates : new JSONArray().put(t));
+        }
+        if (!open(c, pick)) return RemoteServer.err("cannot_open");
+        remember(c, new JSONObject(t.toString()), pick.getString("pkg"));
+        return new JSONObject().put("ok", true).put("opened", new JSONObject().put("title", t.getString("title"))
+                .put("pkg", pick.getString("pkg")).put("how", "deeplink"));
+    }
+
+    /** Search YouTube's site for {@code query} and play the top video in the YouTube app. */
+    static JSONObject playYouTube(Context c, String query) throws Exception {
+        String html = Net.get("https://www.youtube.com/results?hl=en&search_query=" + java.net.URLEncoder.encode(query, "UTF-8"));
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"videoId\":\"([A-Za-z0-9_-]{11})\"").matcher(html);
+        if (!m.find()) return RemoteServer.err("not_found");
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=" + m.group(1)))
+                .setPackage(YOUTUBE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        c.startActivity(i);
+        return new JSONObject().put("ok", true).put("opened", new JSONObject().put("title", query)
+                .put("pkg", YOUTUBE).put("how", "deeplink"));
+    }
+
+    /** Open an offer in its app. Crunchyroll wants its Android TV intent; the rest take their web link. */
+    static boolean open(Context c, JSONObject offer) {
+        String pkg = offer.optString("pkg");
+        try {
+            Intent i;
+            if (offer.optString("url", "").isEmpty()) {
+                // No link (history entry with no catalogue match): just open its app.
+                i = c.getPackageManager().getLeanbackLaunchIntentForPackage(pkg);
+                if (i == null) i = c.getPackageManager().getLaunchIntentForPackage(pkg);
+                if (i == null) return false;
+                c.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                return true;
+            } else if (pkg.equals("com.crunchyroll.crunchyroid") && offer.has("deeplink")) {
+                i = Intent.parseUri(offer.getString("deeplink"), Intent.URI_INTENT_SCHEME);
+            } else {
+                i = new Intent(Intent.ACTION_VIEW, Uri.parse(offer.getString("url")));
+            }
+            i.setPackage(pkg);
+            i.setComponent(null);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            c.startActivity(i);
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "open offer " + pkg, e);
+            return false;
+        }
+    }
+
+    // ---------------------------------------------------------------- recent
+
+    /**
+     * Something played for a minute in {@code pkg} (from Watching): find it on JustWatch for art
+     * and a link back into the same app, and put it first in history. Kept even without a match.
+     */
+    static void watched(Context c, String pkg, String show, String episode) {
+        try {
+            JSONObject hit = null;
+            JSONArray found = search(c, show, 5);
+            for (int i = 0; i < found.length() && hit == null; i++) {
+                JSONObject t = found.getJSONObject(i);
+                if (!t.getString("title").equalsIgnoreCase(show)) continue;
+                JSONArray o = t.getJSONArray("offers");
+                for (int k = 0; k < o.length(); k++) if (pkg.equals(o.getJSONObject(k).optString("pkg"))) hit = t;
+            }
+            JSONObject entry = hit != null ? new JSONObject(hit.toString())
+                    : new JSONObject().put("id", "app:" + pkg + ":" + show).put("title", show)
+                            .put("offers", new JSONArray().put(new JSONObject().put("pkg", pkg).put("label", label(c, pkg, pkg))));
+            if (!episode.isEmpty()) entry.put("episode", episode);
+            remember(c, entry, pkg);
+            Log.i(TAG, "watched " + show + (episode.isEmpty() ? "" : " / " + episode) + " on " + pkg + (hit == null ? " (no match)" : ""));
+        } catch (Exception e) {
+            Log.w(TAG, "watched " + show, e);
+        }
+    }
+
+    /** History, newest first, one entry per title; {@code pkg} is the app it was watched or opened in. */
+    static synchronized void remember(Context c, JSONObject title, String pkg) throws JSONException {
+        title.put("watchedPkg", pkg).put("at", System.currentTimeMillis());
+        JSONArray old = recentRaw(c), next = new JSONArray().put(title);
+        for (int i = 0; i < old.length() && next.length() < 20; i++) {
+            if (!old.getJSONObject(i).optString("id").equals(title.optString("id"))) next.put(old.get(i));
+        }
+        prefs(c).edit().putString("recent", next.toString()).apply();
+    }
+
+    /** Take a title off the history. */
+    static synchronized void forget(Context c, String id) {
+        try {
+            JSONArray old = recentRaw(c), next = new JSONArray();
+            for (int i = 0; i < old.length(); i++) if (!old.getJSONObject(i).optString("id").equals(id)) next.put(old.get(i));
+            prefs(c).edit().putString("recent", next.toString()).apply();
+        } catch (JSONException ignored) { }
+    }
+
+    static JSONArray recent(Context c) throws JSONException {
+        JSONArray r = recentRaw(c);
+        for (int i = 0; i < r.length(); i++) {
+            JSONObject t = r.getJSONObject(i);
+            JSONObject known = byId.get(t.optString("id"));
+            // Entries saved before art was kept: borrow it from the catalogue when the title is there.
+            if (!t.has("thumb") && known != null && known.has("thumb")) {
+                t.put("thumb", known.getString("thumb")).put("backdrop", known.optString("backdrop"));
+            }
+            if (t.has("id") && known == null) byId.put(t.getString("id"), t);
+        }
+        return r;
+    }
+
+    private static JSONArray recentRaw(Context c) throws JSONException {
+        return new JSONArray(prefs(c).getString("recent", "[]"));
+    }
+
+    private static SharedPreferences prefs(Context c) {
+        return c.getSharedPreferences("catalog", Context.MODE_PRIVATE);
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private static boolean installed(Context c, String pkg) {
+        try {
+            c.getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    private static String label(Context c, String pkg, String fallback) {
+        try {
+            PackageManager pm = c.getPackageManager();
+            return String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
+        } catch (PackageManager.NameNotFoundException e) {
+            return fallback;
+        }
+    }
+
+    private static JSONObject post(JSONObject body) throws IOException, JSONException {
+        HttpURLConnection h = (HttpURLConnection) new URL(API).openConnection();
+        h.setConnectTimeout(8000);
+        h.setReadTimeout(12000);
+        h.setRequestMethod("POST");
+        h.setDoOutput(true);
+        h.setRequestProperty("Content-Type", "application/json");
+        try (OutputStream o = h.getOutputStream()) { o.write(body.toString().getBytes(StandardCharsets.UTF_8)); }
+        try (InputStream in = h.getResponseCode() < 400 ? h.getInputStream() : h.getErrorStream()) {
+            return new JSONObject(readAll(in));
+        } finally {
+            h.disconnect();
+        }
+    }
+
+    static String readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        for (int n; (n = in.read(buf)) > 0; ) b.write(buf, 0, n);
+        return b.toString("UTF-8");
+    }
+}

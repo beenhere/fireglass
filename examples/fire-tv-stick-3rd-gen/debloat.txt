@@ -1,0 +1,55 @@
+# Fire TV Stick 3rd gen (AFTSSS / sheldonp), Fire OS 7.7.1.6 build PS7716/5666, Android 9
+# Apply: tools/disable.sh examples/fire-tv-stick-3rd-gen/debloat.txt   Undo: tools/restore.sh <same file>
+# Everything is DISABLED for user 0, never uninstalled. com.amazon.tv.launcher is protected and cannot be disabled.
+# Answers here: keep Prime Video, Alexa voice search, phone casting (DIAL); OTA updates off.
+
+# OTA updates (an update can undo the launcher setup)
+com.amazon.device.software.ota
+com.amazon.device.software.ota.override
+com.amazon.tv.forcedotaupdater.v2
+
+# Ads, ad ID, sponsored previews, content recognition
+com.amazon.ftvads.deeplinking      # ad click-through handler
+com.amazon.hybridadidservice       # advertising ID service
+com.amazon.sneakpeek               # autoplaying sponsored previews on home
+com.amazon.shoptv.client           # Shop TV
+com.amazon.shoptv.firetv.client
+com.amazon.tv.acr                  # automatic content recognition
+com.amazon.media.recommendations   # recommendation rows for the stock home
+
+# Telemetry, logging, crash upload
+com.amazon.logan
+com.amazon.device.logmanager
+com.amazon.device.crashmanager
+com.amazon.perfcollection
+com.amazon.tv.fw.metrics
+com.amazon.wirelessmetrics.service
+com.amazon.dp.logger
+com.amazon.neo.minerva.logcat
+com.amazon.tv.developer.dataservice
+
+# Amazon apps not used
+com.amazon.bueller.music           # Amazon Music
+com.amazon.bueller.photos          # Amazon Photos
+com.amazon.cloud9                  # Silk browser
+com.amazon.minitv.android.app      # Amazon miniTV
+com.amazon.gamehub
+com.amazon.tahoe                   # Amazon Kids
+com.amazon.spotify.mediabrowserservice
+com.amazon.wha.mediabrowserservice
+
+# Smart home, multi-room audio, setup-for-other-devices
+com.amazon.tv.matter
+com.amazon.tv.mattercohost
+com.amazon.whad                    # whole-home audio daemon
+com.amazon.whasettings
+com.amazon.whisperjoin.middleware.np
+com.amazon.tv.alexaalerts
+com.amazon.tv.alexanotifications
+
+# Tutorials, release notes, upsell
+com.amazon.storm.lightning.tutorial
+com.amazon.tmm.tutorial
+com.amazon.tv.releasenotes
+com.amazon.tv.easyupgrade
+com.amazon.tv.website_launcher

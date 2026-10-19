@@ -1,0 +1,12 @@
+{
+  "name": "tv-home-mock-tv",
+  "private": true,
+  "type": "module",
+  "description": "Fake TV Home launcher API (docs/remote-api.md) for exercising the phone app without the TV.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "bonjour-service": "^1.4.4"
+  }
+}

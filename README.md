@@ -1,99 +1,150 @@
-# tv-home
+# Fireglass
 
-**Make a slow, ad-filled Android TV fast and clean again.** Debloat it over Wi-Fi and give it a
-tiny Apple TV-style home screen with rotating nature wallpapers. You can hand the whole thing to
-Claude Code with one prompt, or do it by hand with the scripts here.
+**A fast, beautiful home screen for the Amazon Fire TV Stick, and a phone app that runs it.**
+Debloat a slow Fire TV over Wi-Fi, replace Amazon's ad-filled home with an Apple TV-style one,
+and control the TV from your phone with an on-device AI assistant. No root, nothing permanent,
+nothing sent to anyone's cloud.
 
-![Before: Google TV home with a sponsored hero. After: clean dock over a Lake Louise wallpaper](before-after.png)
+![Fireglass home screen: featured title on the right, apps along the bottom](docs/screenshots/tv-home-featured.jpg)
 
-On a 2 GB TCL Google TV this disabled 25 bloat apps and cut the home screen's memory use from
-192 MB to 83 MB. Everything is reversible: packages are disabled, never uninstalled.
+Built on a Fire TV Stick (3rd gen, 1 GB RAM, Fire OS 7.7). On that stick:
 
-## Do it with Claude Code (easiest)
+| | Amazon's home | Fireglass |
+|---|---|---|
+| Home screen memory | 129 MB | ~70 MB |
+| Free storage (after debloat) | 0.8 GB | 2.1 GB |
+| Free RAM | 180 MB | ~255 MB |
+| Dropped frames moving along the apps row | stutters | 0.2–2% |
 
-1. On the TV: Settings → System → About → press OK on **Build** 7 times → back → Developer options
-   → turn on **USB debugging**. Keep the TV on, on the same Wi-Fi as your computer.
-2. Clone this repo, open Claude Code inside it (so it can reuse the launcher and scripts), and paste:
+## What you get
 
-   ```text
-   My Android TV is slow and full of ads. Find it on my Wi-Fi, connect over ADB, and debloat it:
-   disable the manufacturer's ads, telemetry and junk (reversibly, never uninstall), asking me first
-   about apps and features I might use. Then build and install a fast, minimal Apple TV-style home
-   screen with a dock of my favourite apps and rotating nature wallpapers. Back up before changing
-   anything, check every step with screenshots from the TV, and give me a restore script.
+**On the TV**
 
-   Heads-up from people who've done this: use the adb-shell Python package if macOS blocks adb; on
-   Google TV also disable com.google.android.tungsten.setupwraith or it hijacks the Home button; and
-   test the Home button from inside an app.
-   ```
+- **Featured titles.** What's trending on *your* apps (Netflix, Prime Video, JioHotstar, Zee5,
+  SonyLIV, Apple TV, Crunchyroll) with art, facts and a two-line synopsis. Rest on an app and it
+  narrows to that app's titles, like Apple TV's top shelf. "Open in Netflix" goes straight to
+  the title inside the app.
+- **One row of apps**, then poster rows: **Recently watched** (tracked across apps, with the app
+  and episode) and **Trending on <app>** for each app.
+- **A live sky** behind everything that follows the time of day, or a fixed colour wash.
+- **Apps in use**: a phone-style switcher. Switch to an app, push one away to close it, or
+  close them all.
+- **Customise home**: Featured or Minimal style, background, which rows show, weather, calm
+  motion, and the screensaver.
+- **Screensavers**: a drifting clock, trending posters, your photos, the sky, or a different
+  one each time.
+- **Settings that work.** Fire OS hides most settings behind Amazon's home; Fireglass opens the
+  ones it can directly and the rest through Amazon's Settings tab, then comes back.
 
-3. Accept "Allow USB debugging?" on the TV when asked, then answer a few questions: which apps you
-   use, which go in the dock, whether you want wallpapers.
+| | |
+|---|---|
+| ![Rows](docs/screenshots/tv-home-rows.jpg) | ![Apps in use](docs/screenshots/tv-apps-in-use.jpg) |
+| ![Customise home](docs/screenshots/tv-customise-home.jpg) | ![Clock screensaver](docs/screenshots/tv-screensaver-clock.jpg) |
 
-The prompt is short on purpose; Claude works out the details. The gotchas below are there in case it gets stuck.
+**On your phone** (Android, iOS)
 
-## Do it by hand (macOS)
+- **Remote**: D-pad or touchpad, back/home/menu, media and volume, and a keyboard that types on
+  the TV as you type. Key presses land in ~30 ms.
+- **Assistant**: "play Mirzapur", "continue what I was watching", "put on lofi on YouTube",
+  "down twice and select". A small open-source model (Qwen2.5 or LiquidAI LFM2.5) runs **on the
+  phone**; simple commands work without one. It knows your watch history and asks before it
+  resumes something.
+- **Apps** and **Discover**: open any app, browse trending titles, tap to play on the TV.
 
-```bash
-./setup.sh                                                  # Python ADB client, JDK 17, Android SDK
-tools/find-tv.sh                                            # finds the TV, saves its IP
-tools/venv/bin/python -I tools/tv.py --probe                # model, Android version
-tools/disable.sh examples/tcl-google-tv-g07/debloat.txt     # or your own list, see examples/
-launcher/build-and-install.sh                               # build + install the launcher
+| | | | |
+|---|---|---|---|
+| ![Remote](docs/screenshots/phone-remote.jpg) | ![Assistant](docs/screenshots/phone-assistant.jpg) | ![Discover](docs/screenshots/phone-discover.jpg) | ![Apps](docs/screenshots/phone-apps.jpg) |
+
+## How it works
+
+```
+ phone app ──HTTP (LAN, paired with a PIN)──► Fireglass on the TV ──► apps (deep links)
+     │                                           │  RemoteServer :8090, mDNS _tvhome._tcp
+     └──network ADB (once per boot)──► KeyServer │  HomeService (accessibility): Home button,
+                                      (as shell) │    loading screen, now playing
+                                                 │  Watching (notification listener): history
 ```
 
-Undo everything with `tools/restore.sh <the same list>`.
+A few Fire OS walls and how Fireglass gets round them:
+
+- **Amazon's launcher can't be replaced or disabled.** An accessibility service sees it come to the
+  front and brings Fireglass back. Android holds that for ~5 s after a Home press, so a live
+  loading screen covers the gap.
+- **Apps can't press keys on other apps, and Fire OS refuses ADB from the stick itself.** The
+  phone starts a tiny key injector (`KeyServer`, run with `app_process` as the shell user) over
+  network ADB once per boot. After that it injects in about a millisecond, where
+  `input keyevent` takes 770 ms.
+- **There's no cross-app watch history on Fire OS.** Apps do publish "now playing" for Alexa, so a
+  notification listener reads it. Anything that plays for a minute is kept, with its app.
+- **The GPU is tiny.** Every full-screen blended layer costs 5–8 ms a frame on this Mali, so the
+  featured picture is baked once into a hardware bitmap and nothing redraws the whole screen while
+  you move.
+
+The phone ↔ TV API is in [docs/remote-api.md](docs/remote-api.md).
+
+## Set it up
+
+You need a Mac (Linux works with small changes), a Fire TV Stick on the same Wi-Fi, and about
+30 minutes.
+
+1. **On the TV**: Settings → My Fire TV → About → press OK on your device name 7 times → back →
+   Developer options → turn on **ADB debugging**.
+2. **On the Mac**:
+
+   ```bash
+   git clone https://github.com/bhaweshverma50/fireglass && cd fireglass
+   ./setup.sh                                   # JDK 17 + Android SDK (Homebrew)
+   adb connect <tv-ip>:5555                      # accept "Allow USB debugging?" on the TV
+   export ANDROID_SERIAL=<tv-ip>:5555
+   launcher/build-and-install.sh                 # builds, installs, grants what it needs
+   ```
+
+3. **Optional debloat** (reversible: packages are disabled, never uninstalled). Read the list
+   first and keep what you use:
+
+   ```bash
+   while read -r p; do case "$p" in ''|\#*) ;; *) adb shell pm disable-user --user 0 "${p%% *}";; esac; done \
+     < examples/fire-tv-stick-3rd-gen/debloat.txt
+   ```
+
+   Undo with `pm enable` on the same list.
+4. **Phone app**: see [phone/README.md](phone/README.md). Open it on the same Wi-Fi, pick your TV,
+   type the PIN the TV shows, and allow the phone on the TV once.
+
+Change the shelf order on the TV itself (press ≡ on an app), or the defaults in
+[launcher/res/values/config.xml](launcher/res/values/config.xml).
+
+To go back to stock: `adb uninstall dev.bhawesh.tvhome`.
 
 ## What's here
 
 | Path | What it is |
 |---|---|
-| [PROMPT.md](PROMPT.md) | The prompt for Claude Code / any coding agent |
-| [launcher/](launcher/) | The home screen. 4.7 MB including the wallpapers; plain Android, no network, no background services |
-| [launcher/res/values/config.xml](launcher/res/values/config.xml) | Dock apps, hidden apps, Live TV app, grid columns |
-| [tools/tv.py](tools/tv.py) | Pure-Python ADB client: shell, batch, screenshots, chunked APK push |
-| [tools/find-tv.sh](tools/find-tv.sh) | Finds Android TVs on your Wi-Fi |
-| [tools/type.sh](tools/type.sh) | Type into the TV's on-screen keyboard from your laptop (`tools/type.sh` alone prompts hidden, for passwords) |
-| [tools/disable.sh](tools/disable.sh), [tools/restore.sh](tools/restore.sh) | Apply / undo a debloat list |
-| [examples/](examples/) | Debloat lists per TV model |
+| [launcher/](launcher/) | The TV app. Plain Android Java, no Gradle, about 160 KB |
+| [phone/](phone/) | The phone app. Expo / React Native, with `llama.rn` for the on-device model and a mock TV for development |
+| [docs/remote-api.md](docs/remote-api.md) | The LAN API between them |
+| [examples/](examples/) | Debloat lists (Fire TV Stick 3rd gen, and the original TCL Google TV one) |
+| [tools/](tools/) | ADB helpers from tv-home (Python ADB client, find-tv, type) |
 
-## The launcher
+## Honest limits
 
-- Clock, greeting and date top-left. Frosted pills top-right for **Inputs** (HDMI/AV/Live TV
-  dropdown; the remote's Menu key opens it too), **Wi-Fi** (shows the network name) and **Settings**.
-- A dock of your favourite apps. The focused app's name appears above it over a glow coloured from
-  its banner. Press Down for every other app in a grid.
-- 12 nature photos crossfade every 10 minutes, with a scrim so text stays readable. Swap them in
-  `launcher/assets/wallpapers/` (1920×1080 JPEGs, credits in `launcher/WALLPAPER-CREDITS.md`).
-- Deterministic D-pad focus, remembers the last tile, picks up newly installed apps on return.
-
-Change the dock: edit `config.xml`, then run `launcher/build-and-install.sh`.
-
-## Gotchas we hit
-
-- **macOS blocks the `adb` binary** on the local network ("No route to host"). `tools/tv.py` uses
-  the `adb-shell` Python package instead.
-- **Google TV hijacks the Home button.** With the stock launcher disabled, the setup app
-  (`com.google.android.tungsten.setupwraith`) has a higher HOME priority than any third-party
-  launcher. The install script disables it; `restore.sh` re-enables it.
-- **Home opened the launcher behind the current app**, because of a stale home task from switching
-  launchers. Force-stopping the launcher and `com.android.tv.settings` and pressing Home fixes it.
-  The install script does this.
-- **Chained `pm` commands** (`pm disable a; pm disable b`) can silently stop after the first. The
-  scripts run one per shell call.
-- **Apps installed from the Play Store didn't appear**, because the package broadcast was missed
-  while another app was in front. The launcher re-checks with `getChangedPackages` on every return.
-- **Unsplash blocks scripted downloads** with a bot check. The wallpapers come from Wikimedia
-  Commons Featured Pictures instead.
-
-## Supported TVs
-
-Android TV and Google TV: TCL, Xiaomi/Redmi, Hisense, Sony, OnePlus, Realme, Nvidia Shield,
-Chromecast with Google TV and most others. Not Samsung (Tizen), LG (webOS) or Fire TV.
-Tested on: TCL Google TV (Android 11). Add yours to `examples/`.
+- Amazon's home stays installed and comes back into memory now and then; Fire OS protects it.
+- After Home, you see Amazon's home for about 0.7 s before Fireglass covers it.
+- Watch history only records what apps report. JioHotstar reports episodes; YouTube reports nothing.
+- Trending titles and per-app links come from JustWatch's public API, which is unofficial and
+  could change. Weather is from Open-Meteo, location from your IP via ip-api.com.
+- Tested on one Fire TV Stick model, in India. Other regions need the country code in
+  `Catalog.java`.
 
 ## Credits
 
-Inspired by [Gathin23/tv-vibehack](https://github.com/Gathin23/tv-vibehack). Wallpaper photos are
-from Wikimedia Commons under their own licences, see
-[launcher/WALLPAPER-CREDITS.md](launcher/WALLPAPER-CREDITS.md). Code is MIT, see [LICENSE](LICENSE).
+Fireglass started as a fork of [tv-home](https://github.com/mihirgupta0900/tv-home) by Mihir Gupta
+(MIT), an Apple TV-style launcher and debloat kit for Google TV. Fonts: Instrument Serif and
+Figtree, both SIL Open Font License (licences in `launcher/assets/fonts/`). Icons in the phone
+app: Lucide.
+
+Built with [Claude Code](https://claude.com/claude-code).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

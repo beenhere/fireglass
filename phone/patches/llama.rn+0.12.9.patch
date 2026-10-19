@@ -1,0 +1,68 @@
+diff --git a/node_modules/llama.rn/ios/RNLlama.h b/node_modules/llama.rn/ios/RNLlama.h
+index 9b8f498..ed635ae 100644
+--- a/node_modules/llama.rn/ios/RNLlama.h
++++ b/node_modules/llama.rn/ios/RNLlama.h
+@@ -8,6 +8,8 @@
+ #import <rnllama/nlohmann/json.hpp>
+ #endif
+ 
+-@interface RNLlama : NSObject <RCTBridgeModule>
++#import <ReactCommon/RCTTurboModuleWithJSIBindings.h>
++
++@interface RNLlama : NSObject <RCTBridgeModule, RCTTurboModuleWithJSIBindings>
+ 
+ @end
+diff --git a/node_modules/llama.rn/ios/RNLlama.mm b/node_modules/llama.rn/ios/RNLlama.mm
+index 6039042..6cc5f1e 100644
+--- a/node_modules/llama.rn/ios/RNLlama.mm
++++ b/node_modules/llama.rn/ios/RNLlama.mm
+@@ -87,37 +87,21 @@ - (void)setBridge:(RCTBridge *)bridge {
+     _bridge = bridge;
+ }
+ 
++// React Native 0.8x on iOS has no RCTCxxBridge any more (bridgeless): the runtime reaches us
++// through RCTTurboModuleWithJSIBindings when the module is first loaded, so install there.
++static BOOL rnllamaJSIInstalled = NO;
++
++- (void)installJSIBindingsWithRuntime:(facebook::jsi::Runtime &)runtime
++                          callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker
++{
++    rnllama_jsi::installJSIBindings(runtime, callInvoker);
++    rnllamaJSIInstalled = YES;
++}
++
+ RCT_EXPORT_METHOD(install:(RCTPromiseResolveBlock)resolve
+                  withRejecter:(RCTPromiseRejectBlock)reject)
+ {
+-    RCTBridge *bridge = self.bridge ?: [RCTBridge currentBridge];
+-    if (!bridge) {
+-        resolve(@false);
+-        return;
+-    }
+-
+-    RCTCxxBridge *cxxBridge = (RCTCxxBridge *)bridge.batchedBridge;
+-    if (!cxxBridge) {
+-        cxxBridge = (RCTCxxBridge *)bridge;
+-    }
+-    auto callInvoker = cxxBridge.jsCallInvoker ?: bridge.jsCallInvoker;
+-    if (!cxxBridge.runtime) {
+-        resolve(@false);
+-        return;
+-    }
+-
+-    facebook::jsi::Runtime *runtime = static_cast<facebook::jsi::Runtime *>(cxxBridge.runtime);
+-
+-    if (callInvoker) {
+-        callInvoker->invokeAsync([runtime, callInvoker]() {
+-            rnllama_jsi::installJSIBindings(*runtime, callInvoker);
+-        });
+-    } else {
+-        resolve(@false);
+-        return;
+-    }
+-
+-    resolve(@true);
++    resolve(@(rnllamaJSIInstalled));
+ }
+ 
+ - (void)invalidate {

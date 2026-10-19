@@ -13,6 +13,9 @@ STOCK_LAUNCHER="${STOCK_LAUNCHER:-com.google.android.apps.tv.launcherx/.home.Hom
   echo "pm enable com.google.android.tungsten.setupwraith"
   echo "pm enable ${STOCK_LAUNCHER%%/*}"
   echo "cmd package set-home-activity --user 0 $STOCK_LAUNCHER"
+  # Fireglass's min_futurity=0 (launcher/build-and-install.sh).
+  # ponytail: stock has no alarm_manager_constants, so delete it; merge like the installer if yours did.
+  echo "settings delete global alarm_manager_constants"
   echo "input keyevent KEYCODE_HOME"
 } | "$PY" -I tools/tv.py --batch
 echo "Restored. Press Home on the remote."

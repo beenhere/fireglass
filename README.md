@@ -68,8 +68,10 @@ Built on a Fire TV Stick (3rd gen, 1 GB RAM, Fire OS 7.7). On that stick:
 A few Fire OS walls and how Fireglass gets round them:
 
 - **Amazon's launcher can't be replaced or disabled.** An accessibility service sees it come to the
-  front and brings Fireglass back. Android holds that for ~5 s after a Home press, so a live
-  loading screen covers the gap.
+  front and brings Fireglass back. Android holds an app's launches for ~5 s after a Home press,
+  so the bounce goes through an alarm (system_server sends it, and is exempt) with the global
+  `min_futurity=0`, which the installer sets. A loading screen, kept ready from the start, covers
+  Amazon's home until Fireglass has drawn. Idea from [dumbtv](https://github.com/humblemuzzu/dumbtv).
 - **Apps can't press keys on other apps, and Fire OS refuses ADB from the stick itself.** The
   phone starts a tiny key injector (`KeyServer`, run with `app_process` as the shell user) over
   network ADB once per boot. After that it injects in about a millisecond, where
@@ -141,7 +143,10 @@ To go back to stock: `adb uninstall dev.bhawesh.tvhome`.
 ## Honest limits
 
 - Amazon's home stays installed and comes back into memory now and then; Fire OS protects it.
-- After Home, you see Amazon's home for about 0.7 s before Fireglass covers it.
+- After Home, a loading screen shows for about 1 s (0.7–1.2 s measured) before Fireglass is back.
+  Amazon's home doesn't show.
+- `min_futurity=0` is global: any app's alarm set for the next few seconds fires on time instead
+  of being pushed ~5 s out. `tools/restore.sh` removes it.
 - Watch history only records what apps report. JioHotstar reports episodes; YouTube reports nothing.
 - Trending titles and per-app links come from JustWatch's public API, which is unofficial and
   could change. Weather is from Open-Meteo, location from your IP via ip-api.com.

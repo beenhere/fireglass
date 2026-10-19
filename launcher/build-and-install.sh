@@ -50,6 +50,10 @@ CUR=$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')
 case "$CUR" in *"$SVC"*) ;; null|"") adb shell settings put secure enabled_accessibility_services "$SVC" ;;
   *) adb shell settings put secure enabled_accessibility_services "$CUR:$SVC" ;; esac
 adb shell settings put secure accessibility_enabled 1
+# Alarms normally fire no sooner than ~5 s out; HomeService's bounce back from Amazon's home needs
+# them at once. Global (all apps' alarms); tools/restore.sh takes it out again.
+AMC=$(adb shell settings get global alarm_manager_constants | tr -d '\r' | tr ',' '\n' | { grep -v -e '^min_futurity=' -e '^null$' || true; } | paste -sd, -)
+adb shell settings put global alarm_manager_constants "${AMC:+$AMC,}min_futurity=0"
 # Watch history reads apps' "now playing", which Android shows only to notification listeners.
 adb shell cmd notification allow_listener "$PKG/$PKG.Watching" 2>/dev/null \
   || adb shell settings put secure enabled_notification_listeners "$PKG/$PKG.Watching"

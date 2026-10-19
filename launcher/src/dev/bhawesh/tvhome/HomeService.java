@@ -2,13 +2,18 @@ package dev.bhawesh.tvhome;
 
 import android.accessibilityservice.AccessibilityService;
 import android.app.ActivityManager;
+import android.app.ActivityOptions;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.graphics.PixelFormat;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.Gravity;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.graphics.drawable.GradientDrawable;
@@ -19,8 +24,11 @@ import android.content.Context;
 /**
  * Fire OS won't let a third-party app be Home (com.amazon.tv.launcher is a protected package), and
  * it consumes KEYCODE_HOME before accessibility key filtering sees it. So this service watches for
- * the Amazon launcher's window and bounces back here. Android holds that bounce for ~5 s after a
- * Home press (app-switch guard), so meanwhile a loading screen (Look.loading) covers the Amazon one.
+ * the Amazon launcher's window and bounces back here. Android holds a plain startActivity for ~5 s
+ * after a Home press (app-switch guard), so the bounce goes through an alarm instead: system_server
+ * sends the PendingIntent and is exempt. The alarm fires at once only with the global
+ * alarm_manager_constants min_futurity=0 (build-and-install.sh sets it); without it, it waits ~5 s.
+ * A loading screen (Look.loading) covers Amazon's home until ours has drawn.
  */
 public class HomeService extends AccessibilityService {
     static final String TAG = "TvHome";
@@ -32,7 +40,12 @@ public class HomeService extends AccessibilityService {
 
     private final Handler handler = new Handler();
     private final Runnable hide = this::removeMask;
-    private View mask, pinView;
+    private View pinView;
+    // The cover window is added once and only shown or hidden, so a Home press creates no window.
+    private FrameLayout cover;
+    private WindowManager.LayoutParams coverLp;
+    private boolean covering;
+    private long lastBounce;
     private RemoteServer remote;
     private final Runnable pinTimeout = this::hidePin;
     private String front = "";          // package of the window in front
@@ -43,6 +56,7 @@ public class HomeService extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         self = this;
+        addCover();
         remote = new RemoteServer(this);
         remote.start();
     }
@@ -50,7 +64,10 @@ public class HomeService extends AccessibilityService {
     @Override
     public boolean onUnbind(Intent i) {
         self = null;
-        removeMask();
+        handler.removeCallbacks(hide);
+        if (cover != null) getSystemService(WindowManager.class).removeViewImmediate(cover);
+        cover = null;
+        covering = false;
         hidePin();
         if (remote != null) remote.stop();
         return super.onUnbind(i);
@@ -63,6 +80,8 @@ public class HomeService extends AccessibilityService {
         // Popups and toasts from the system don't count as what's in front.
         if (pkg.equals("android") || pkg.equals("com.android.systemui")) return;
         front = pkg;
+        // Opened something else first: drop a queued bounce so it can't pull the user back.
+        if (!pkg.equals(AMAZON_HOME) && !pkg.equals(getPackageName())) arrived(this);
         if (settingsMode) {
             // Amazon settings and its sub-screens are fine; anything else ends the visit.
             if (pkg.equals(AMAZON_HOME) || pkg.equals(FIRE_SETTINGS)) return;
@@ -115,16 +134,31 @@ public class HomeService extends AccessibilityService {
     }
 
     private void bounce() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastBounce < 1000) return;
+        lastBounce = now;
         showMask();
-        startActivity(new Intent(this, MainActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP));
+        getSystemService(AlarmManager.class).setExact(AlarmManager.ELAPSED_REALTIME,
+                SystemClock.elapsedRealtime(), launch(this));
         // The Amazon launcher holds ~130 MB; reclaim it once it's behind us (after the 5 s guard).
         ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
         handler.postDelayed(() -> am.killBackgroundProcesses(AMAZON_HOME), 8000);
     }
 
+    private static PendingIntent launch(Context c) {
+        Intent i = new Intent(c, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        return PendingIntent.getActivity(c, 0, i, PendingIntent.FLAG_UPDATE_CURRENT,
+                ActivityOptions.makeCustomAnimation(c, 0, 0).toBundle());
+    }
+
+    /** Home is in front (or the user went elsewhere): cancel a bounce that hasn't fired yet. */
+    static void arrived(Context c) {
+        c.getSystemService(AlarmManager.class).cancel(launch(c));
+    }
+
     static boolean maskShowing() {
-        return self != null && self.mask != null;
+        return self != null && self.covering;
     }
 
     /** Called by MainActivity once it is drawn again. */
@@ -132,31 +166,54 @@ public class HomeService extends AccessibilityService {
         if (self != null) self.removeMask();
     }
 
-    private void showMask() {
-        if (mask != null) return;
-        View v = Look.loading(this, MainActivity.dockCount, MainActivity.accent);
+    private static final int PASSIVE = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+
+    private void addCover() {
+        FrameLayout v = new FrameLayout(this);
+        v.setVisibility(View.GONE);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(-1, -1,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_FULLSCREEN | PASSIVE,
                 PixelFormat.OPAQUE);
+        lp.windowAnimations = 0;
         try {
             getSystemService(WindowManager.class).addView(v, lp);
         } catch (RuntimeException ex) {
-            Log.w(TAG, "mask failed", ex);
+            Log.w(TAG, "cover failed", ex);
             return;
         }
-        mask = v;
+        cover = v;
+        coverLp = lp;
+    }
+
+    private void showMask() {
+        if (covering || cover == null) return;
+        covering = true;
+        cover.animate().cancel();
+        cover.setAlpha(1f);
+        // Built per show, not kept: its sky and shimmer would keep animating while hidden.
+        cover.removeAllViews();
+        cover.addView(Look.loading(this, MainActivity.dockCount, MainActivity.accent));
+        // Focusable while showing, so remote keys don't reach Amazon's home underneath.
+        coverLp.flags &= ~PASSIVE;
+        getSystemService(WindowManager.class).updateViewLayout(cover, coverLp);
+        cover.setVisibility(View.VISIBLE);
         // Never strand the remote behind the loading screen if the bounce fails.
         handler.postDelayed(hide, 8000);
     }
 
     private void removeMask() {
         handler.removeCallbacks(hide);
-        View m = mask;
-        if (m == null) return;
-        mask = null;
-        m.animate().alpha(0).setDuration(180)
-                .withEndAction(() -> getSystemService(WindowManager.class).removeViewImmediate(m));
+        if (!covering) return;
+        covering = false;
+        cover.animate().alpha(0).setDuration(180).withEndAction(() -> {
+            if (covering || cover == null) return;
+            cover.setVisibility(View.GONE);
+            cover.removeAllViews();
+            coverLp.flags |= PASSIVE;
+            getSystemService(WindowManager.class).updateViewLayout(cover, coverLp);
+        });
     }
 
     /** Package of the app in front, for the phone's "now playing". */

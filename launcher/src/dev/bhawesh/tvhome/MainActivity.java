@@ -156,6 +156,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        HomeService.arrived(this);
         IntentFilter tf = new IntentFilter(Intent.ACTION_TIME_TICK);
         tf.addAction(Intent.ACTION_TIME_CHANGED);
         tf.addAction(Intent.ACTION_TIMEZONE_CHANGED);
@@ -177,9 +178,25 @@ public class MainActivity extends Activity {
             boolean full = firstShow && !masked;
             firstShow = false;
             prepareEntrance(full);
-            // ponytail: fixed delay for "drawn"; a pre-draw listener if the mask ever lifts too early.
-            handler.postDelayed(() -> { HomeService.hideMask(); playEntrance(full); }, masked ? 120 : 0);
+            reveal = () -> { reveal = null; HomeService.hideMask(); playEntrance(full); };
+            // Out of the loading screen: lift it once our window is on screen (onEnterAnimationComplete);
+            // the delay is only a fallback in case that callback never comes.
+            handler.removeCallbacks(revealTask);
+            handler.postDelayed(revealTask, masked ? 400 : 0);
         }
+    }
+
+    private Runnable reveal;
+    private final Runnable revealTask = this::revealNow;
+
+    private void revealNow() {
+        handler.removeCallbacks(revealTask);
+        if (reveal != null) reveal.run();
+    }
+
+    @Override
+    public void onEnterAnimationComplete() {
+        revealNow();
     }
 
     @Override
